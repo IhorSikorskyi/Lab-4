@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 from scipy.spatial.distance import cdist
 import matplotlib.pyplot as plt
+from pyswarm import pso
 
 # Завантаження і очищення даних
 def load_and_clean_data(file_path):
@@ -20,9 +21,9 @@ def preper(df):
 
 # Генерація координат
 def generate_random_coords(df_clean, num_points=15):
-    unique_values = df_clean.iloc[:, 1].unique()[:num_points]  # Вибираємо перші 15 точок
+    unique_values = df_clean.iloc[:, 1].unique()[:num_points]
     random_coords = {value: (np.random.uniform(-100, 100), np.random.uniform(-100, 100)) for value in unique_values}
-    return np.array(list(random_coords.values()))  # Список координат
+    return np.array(list(random_coords.values()))
 
 # Створення матриці відстаней
 def create_distance_matrix(coords):
@@ -30,38 +31,34 @@ def create_distance_matrix(coords):
 
 # Функція пристосованості: обчислення загальної довжини маршруту
 def fitness(route, distance_matrix):
+    route = np.argsort(route)
     total_distance = sum(distance_matrix[route[i], route[i + 1]] for i in range(len(route) - 1))
+    total_distance += distance_matrix[route[-1], route[0]]  # Замикання маршруту
     return total_distance
 
-# Ініціалізація параметрів PSO
-def initialize_particles(n_particles, coords):
-    particles = [np.random.permutation(len(coords)) for _ in range(n_particles)]
-    velocities = [np.random.uniform(-1, 1, len(coords)) for _ in range(n_particles)]
-    return particles, velocities
+# Основний алгоритм PSO з pyswarm
+def optimize_with_pso(distance_matrix, num_particles=30, num_iterations=100):
+    num_points = distance_matrix.shape[0]
+    # Межі для частинок (всі значення в діапазоні [0, num_points])
+    lb = [0] * num_points
+    ub = [num_points - 1] * num_points
 
-# Оновлення найкращих рішень
-def update_best_solutions(particles, p_best, p_best_scores, g_best, g_best_score, distance_matrix):
-    for i, particle in enumerate(particles):
-        current_fitness = fitness(particle, distance_matrix)
-        if current_fitness < p_best_scores[i]:
-            p_best[i] = particle
-            p_best_scores[i] = current_fitness
-        if current_fitness < g_best_score:
-            g_best = particle
-            g_best_score = current_fitness
-    return p_best, p_best_scores, g_best, g_best_score
-
-# Основний цикл PSO
-def run_pso(n_iterations, particles, velocities, p_best, p_best_scores, g_best, g_best_score, distance_matrix):
     history = []
-    for iteration in range(n_iterations):
-        for i in range(len(particles)):
-            r1, r2 = np.random.rand(), np.random.rand()
-            velocities[i] = 0.5 * velocities[i] + 1.5 * r1 * (p_best[i] - particles[i]) + 1.5 * r2 * (g_best - particles[i])
-            particles[i] = np.argsort(velocities[i])  # Оновлення позиції частинок
-        p_best, p_best_scores, g_best, g_best_score = update_best_solutions(particles, p_best, p_best_scores, g_best, g_best_score, distance_matrix)
-        history.append(g_best_score)
-    return g_best, g_best_score, history
+    iteration_counter = [0]
+
+    def fitness_with_history(route):
+        cost = fitness(route, distance_matrix)
+        if iteration_counter[0] % 10 == 0:
+            history.append(cost)
+        iteration_counter[0] += 1
+        return cost
+
+    # Виконання PSO
+    best_route, best_distance = pso(
+        fitness_with_history,
+        lb, ub, swarmsize=num_particles, maxiter=num_iterations, debug=True
+    )
+    return np.argsort(best_route), best_distance, history
 
 # Візуалізація маршрутів
 def visualize_sample_routes(coords, sample_size=100):
@@ -70,7 +67,7 @@ def visualize_sample_routes(coords, sample_size=100):
     plt.figure(figsize=(12, 8))
     for route in sampled_routes:
         route_coords = coords[list(route)]
-        route_coords = np.vstack([route_coords, route_coords[0]])  # Замкнути маршрут
+        route_coords = np.vstack([route_coords, route_coords[0]])
         plt.plot(route_coords[:, 0], route_coords[:, 1], 'gray', alpha=0.3)
     plt.scatter(coords[:, 0], coords[:, 1], c='red', label='Точки')
     plt.title("Приклади можливих маршрутів")
@@ -79,10 +76,11 @@ def visualize_sample_routes(coords, sample_size=100):
     plt.legend()
     plt.show()
 
+
 def plot_best_route(coords, g_best):
     plt.figure(figsize=(12, 8))
     route_coords = coords[list(g_best)]
-    route_coords = np.vstack([route_coords, route_coords[0]])  # Замкнути маршрут
+    route_coords = np.vstack([route_coords, route_coords[0]])
     plt.plot(route_coords[:, 0], route_coords[:, 1], 'b-', label="Найкращий маршрут")
     plt.scatter(coords[:, 0], coords[:, 1], c='red', label='Точки')
     plt.title("Найкращий знайдений маршрут")
@@ -91,14 +89,22 @@ def plot_best_route(coords, g_best):
     plt.legend()
     plt.show()
 
+# Візуалізація історії
 def plot_history(history):
+    smoothed_history = pd.Series(history).rolling(window=5).mean()  # Згладжування (середнє по 5 сусіднім точкам)
+
     plt.figure(figsize=(10, 6))
-    plt.plot(history, label='Мінімальна вартість')
-    plt.title("Прогрес алгоритму PSO")
-    plt.xlabel("Ітерація")
-    plt.ylabel("Вартість")
-    plt.legend()
-    plt.grid()
+    plt.plot(range(0, len(history) * 10, 10), smoothed_history, label='Згладжена мінімальна вартість', color='blue',
+             linewidth=2)
+    plt.scatter(range(0, len(history) * 10, 10), history, color='red', s=10, label='Вартість (кожна 10-а ітерація)',
+                alpha=0.6)
+
+    plt.title("Прогрес алгоритму PSO", fontsize=16)
+    plt.xlabel("Ітерація", fontsize=14)
+    plt.ylabel("Вартість", fontsize=14)
+    plt.legend(fontsize=12)
+    plt.grid(alpha=0.3)
+    plt.tight_layout()
     plt.show()
 
 if __name__ == '__main__':
@@ -107,24 +113,14 @@ if __name__ == '__main__':
     coords = generate_random_coords(df_clean)
     distance_matrix = create_distance_matrix(coords)
 
-    n_particles = 30
-    n_iterations = 100
-    particles, velocities = initialize_particles(n_particles, coords)
-
-    # Початкове знаходження найкращих рішень
-    p_best = particles.copy()
-    p_best_scores = [fitness(p, distance_matrix) for p in particles]
-    g_best = p_best[np.argmin(p_best_scores)]
-    g_best_score = min(p_best_scores)
-
-    # Запуск PSO
-    g_best, g_best_score, history = run_pso(n_iterations, particles, velocities, p_best, p_best_scores, g_best, g_best_score, distance_matrix)
+    # Оптимізація маршруту за допомогою PSO
+    best_route, best_distance, history = optimize_with_pso(distance_matrix)
 
     # Виведення результатів
-    print(f"Найкращий знайдений маршрут: {g_best}")
-    print(f"Мінімальна відстань: {g_best_score}")
+    print(f"Найкращий знайдений маршрут: {best_route}")
+    print(f"Мінімальна відстань: {best_distance}")
 
     # Візуалізація результатів
     visualize_sample_routes(coords)
-    plot_best_route(coords, g_best)
+    plot_best_route(coords, best_route)
     plot_history(history)
